@@ -2,6 +2,15 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: static website with cloudfront s3 lambda route53
 
 Parameters:
+  Domain:
+    Type: String
+  ZoneId:
+    Type: String
+  Env:
+    Type: String
+    AllowedValues:
+      - "dev"
+      - "prod"
   UseLegacy:
     Type: String
     AllowedValues:
@@ -16,6 +25,7 @@ Parameters:
 Conditions:
   UseLegacyCond: !Equals [!Ref UseLegacy, 'true']
   UseCfCond: !Equals [!Ref UseCf, 'yes']
+  ProdCond: !Equals [!Ref Env, 'prod']
 
 Resources:
 
@@ -78,15 +88,16 @@ Resources:
           exports.handler = (event, context, callback) => {
             let request = event.Records[0].cf.request;
             let host = request.headers.host[0].value;
+            let url = 'https://www.onegovee2.com' + request.uri;
 
             if (host == 'onegovee2.com') {
               var response = {
-                status: '302',
-                statusDescription: 'Moved Temporarily',
+                status: '301',
+                statusDescription: 'Moved Permanently',
                 headers: {
                   'location': [{
                     key: 'Location',
-                    value: 'https://www.onegovee2.com',
+                    value: url,
                   }],
                 },
               };
@@ -97,7 +108,7 @@ Resources:
             }
           };
 
-  LambdaVersionRedirectv5:
+  LambdaVersionRedirectv6:
     Type: AWS::Lambda::Version
     Properties:
       FunctionName: !Ref LambdaFunctionRedirect
@@ -105,10 +116,10 @@ Resources:
   AcmCert:
     Type: AWS::CertificateManager::Certificate
     Properties:
-      DomainName: onegovee2.com
+      DomainName: !Ref Domain
       DomainValidationOptions:
         - DomainName: onegovee2.com
-          HostedZoneId: Z06347342E64Y34SMDPEF
+          HostedZoneId: !Ref ZoneId
       ValidationMethod: DNS
       SubjectAlternativeNames:
         - www.onegovee2.com
@@ -116,7 +127,7 @@ Resources:
   r53recordgroup:
     Type: AWS::Route53::RecordSetGroup
     Properties:
-      HostedZoneId: Z06347342E64Y34SMDPEF
+      HostedZoneId: !Ref ZoneId
       RecordSets:
         !If 
         - UseLegacyCond
@@ -132,23 +143,6 @@ Resources:
             AliasTarget:
               DNSName: !GetAtt CfDist.DomainName
               HostedZoneId: Z2FDTNDATAQYW2
-
-  r53recordgroupredirect:
-    Type: AWS::Route53::RecordSetGroup
-    DependsOn:
-      - r53recordgroup
-    Properties:
-      HostedZoneId: Z06347342E64Y34SMDPEF
-      RecordSets:
-        !If
-        - UseLegacyCond
-        - 
-          - Name: onegovee2.com.
-            Type: A
-            ResourceRecords:
-              - 192.168.1.222
-            TTL: 900
-        -
           - Name: onegovee2.com.
             Type: A
             AliasTarget:
@@ -200,7 +194,7 @@ Resources:
               LambdaFunctionARN: !Join 
                 - ':'
                 - - !GetAtt [LambdaFunctionRedirect, Arn]
-                  - !GetAtt [LambdaVersionRedirectv5, Version]
+                  - !GetAtt [LambdaVersionRedirectv6, Version]
           TargetOriginId: !GetAtt S3Bucket.RegionalDomainName
           ViewerProtocolPolicy: redirect-to-https
         PriceClass: PriceClass_100
