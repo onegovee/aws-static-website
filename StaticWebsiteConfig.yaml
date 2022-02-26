@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: static website with cloudfront s3 lambda route53
+
+Parameters:
+  UseLegacy:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+  UseCf:
+    Type: String
+    AllowedValues:
+      - "yes"
+      - "no"
+
+Conditions:
+  UseLegacyCond: !Equals [!Ref UseLegacy, 'true']
+  UseCfCond: !Equals [!Ref UseCf, 'yes']
+
+Resources:
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Effect: Allow
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaFunctionAddHeaders:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Add http headers
+      Handler: 'index.handler'
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 25
+      Code:
+        ZipFile: |
+          'use strict';
+
+          exports.handler = (event, context, callback) => {
+            const response = event.Records[0].cf.response;
+            const headers = response.headers;
+
+            headers['Strict-Transport-Security'] = [{
+              key: 'Strict-Transport-Security',
+              value: 'max-age=31536000; includeSubdomains; preload'
+            }];
+
+            callback(null, response);
+          };
+
+  LambdaVersionAddHeadersv1:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref LambdaFunctionAddHeaders
+
+  AcmCert:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: onegovee2.com
+      DomainValidationOptions:
+        - DomainName: onegovee2.com
+          HostedZoneId: Z06347342E64Y34SMDPEF
+      ValidationMethod: DNS
+      SubjectAlternativeNames:
+        - www.onegovee2.com
+
+  r53recordgroup:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: Z06347342E64Y34SMDPEF
+      RecordSets:
+        !If 
+        - UseLegacyCond
+        -
+          - Name: www.onegovee2.com.
+            Type: A
+            ResourceRecords:
+              - 192.168.1.222
+            TTL: 900
+        -
+          - Name: www.onegovee2.com.
+            Type: A
+            AliasTarget:
+              DNSName: !GetAtt CfDist.DomainName
+              HostedZoneId: Z2FDTNDATAQYW2
+
+  r53recordgroupredirect:
+    Type: AWS::Route53::RecordSetGroup
+    DependsOn:
+      - r53recordgroup
+    Properties:
+      HostedZoneId: Z06347342E64Y34SMDPEF
+      RecordSets:
+        !If
+        - UseLegacyCond
+        - 
+          - Name: onegovee2.com.
+            Type: A
+            ResourceRecords:
+              - 192.168.1.222
+            TTL: 900
+        -
+          - Name: onegovee2.com.
+            Type: A
+            AliasTarget:
+              DNSName: www.onegovee2.com
+              HostedZoneId: Z06347342E64Y34SMDPEF
+
+  CfOai:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'for onegovee2 cf dist'
+
+  CfDist:
+    Type: AWS::CloudFront::Distribution
+    Condition: UseCfCond
+    DependsOn:
+      - S3BucketPolicy
+    Properties:
+      DistributionConfig:
+        Aliases: 
+          - www.onegovee2.com
+          - onegovee2.com
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCert
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        Origins:
+          - Id: !GetAtt S3Bucket.RegionalDomainName
+            DomainName: !GetAtt S3Bucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Join ['', ['origin-access-identity/cloudfront/', !Ref CfOai]]
+        DefaultCacheBehavior:
+          Compress: true
+          AllowedMethods:
+            - HEAD
+            - GET
+          ForwardedValues:
+            QueryString: false
+          LambdaFunctionAssociations:
+            - EventType: 'origin-response'
+              LambdaFunctionARN: !Join
+                - ':'
+                - - !GetAtt [LambdaFunctionAddHeaders, Arn]
+                  - !GetAtt [LambdaVersionAddHeadersv1, Version]
+          TargetOriginId: !GetAtt S3Bucket.RegionalDomainName
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt CfOai.S3CanonicalUserId
+            Action: s3:GetObject
+            Resource: !Join ['', [!GetAtt S3Bucket.Arn, "/*"]]
