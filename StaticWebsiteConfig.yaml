@@ -63,6 +63,45 @@ Resources:
     Properties:
       FunctionName: !Ref LambdaFunctionAddHeaders
 
+  LambdaFunctionRedirect:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Host based redirect
+      Handler: 'index.handler'
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 5
+      Code:
+        ZipFile: |
+          'use strict';
+
+          exports.handler = (event, context, callback) => {
+            let request = event.Records[0].cf.request;
+            let host = request.headers.host[0].value;
+
+            if (host == 'onegovee2.com') {
+              var response = {
+                status: '302',
+                statusDescription: 'Moved Temporarily',
+                headers: {
+                  'location': [{
+                    key: 'Location',
+                    value: 'https://www.onegovee2.com',
+                  }],
+                },
+              };
+              callback(null, response);
+            }
+            else {
+              callback(null, request);
+            }
+          };
+
+  LambdaVersionRedirectv5:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref LambdaFunctionRedirect
+
   AcmCert:
     Type: AWS::CertificateManager::Certificate
     Properties:
@@ -113,8 +152,8 @@ Resources:
           - Name: onegovee2.com.
             Type: A
             AliasTarget:
-              DNSName: www.onegovee2.com
-              HostedZoneId: Z06347342E64Y34SMDPEF
+              DNSName: !GetAtt CfDist.DomainName
+              HostedZoneId: Z2FDTNDATAQYW2
 
   CfOai:
     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
@@ -157,6 +196,11 @@ Resources:
                 - ':'
                 - - !GetAtt [LambdaFunctionAddHeaders, Arn]
                   - !GetAtt [LambdaVersionAddHeadersv1, Version]
+            - EventType: 'viewer-request'
+              LambdaFunctionARN: !Join 
+                - ':'
+                - - !GetAtt [LambdaFunctionRedirect, Arn]
+                  - !GetAtt [LambdaVersionRedirectv5, Version]
           TargetOriginId: !GetAtt S3Bucket.RegionalDomainName
           ViewerProtocolPolicy: redirect-to-https
         PriceClass: PriceClass_100
