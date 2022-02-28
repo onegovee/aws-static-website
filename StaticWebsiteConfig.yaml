@@ -108,8 +108,8 @@ Resources:
                 callback(null, request);
               }
             };
-          - TargetDNS: !If [ProdCond, !Sub "www.${Domain}", !Sub "dev.${Domain}"]
-            RedirectDNS: !If [ProdCond, !Ref Domain, !Sub "dev-redirect.${Domain}"]
+          - TargetDNS: !If [ProdCond, !Sub "www.${Domain}", !Sub "www.${Env}.${Domain}"]
+            RedirectDNS: !If [ProdCond, !Ref Domain, !Sub "${Env}.${Domain}"]
 
   LambdaVersionRedirectv9:
     Type: AWS::Lambda::Version
@@ -119,15 +119,25 @@ Resources:
   AcmCert:
     Type: AWS::CertificateManager::Certificate
     Properties:
-      DomainName: !Ref Domain
+      DomainName: !If
+        - ProdCond
+        - !Ref Domain
+        - !Sub ${Env}.${Domain}
       DomainValidationOptions:
-        - DomainName: onegovee2.com
+        - DomainName: !If
+          - ProdCond
+          - !Ref Domain
+          - !Sub ${Env}.${Domain}
           HostedZoneId: !Ref ZoneId
       ValidationMethod: DNS
-      SubjectAlternativeNames:
-        - www.onegovee2.com
+      SubjectAlternativeNames: !If
+        - ProdCond
+        - 
+          - !Sub www.${Domain}
+        - 
+          - !Sub www.${Env}.${Domain}
 
-  r53recordgroup:
+  r53RecordGroup:
     Type: AWS::Route53::RecordSetGroup
     Properties:
       HostedZoneId: !Ref ZoneId
@@ -135,26 +145,52 @@ Resources:
         !If 
         - UseLegacyCond
         -
-          - Name: !Sub ${Domain}.
-            Type: A
-            ResourceRecords:
-              - 192.168.1.222
-            TTL: 900
-          - Name: !Sub www.${Domain}.
+          - Name: !If
+              - ProdCond
+              - !Sub "www.${Domain}"
+              - !Sub "www.${Env}.${Domain}"
             Type: A
             ResourceRecords:
               - 192.168.1.222
             TTL: 900
         -
-          - Name: !Sub www.${Domain}.
+          - Name: !If
+              - ProdCond
+              - !Sub "www.${Domain}"
+              - !Sub "www.${Env}.${Domain}"
             Type: A
             AliasTarget:
               DNSName: !GetAtt CfDist.DomainName
               HostedZoneId: Z2FDTNDATAQYW2
-          - Name: !Sub ${Domain}.
+
+  r53RecordGroupRedirect:
+    Type: AWS::Route53::RecordSetGroup
+    DependsOn: r53RecordGroup
+    Properties:
+      HostedZoneId: !Ref ZoneId
+      RecordSets:
+        !If 
+        - UseLegacyCond
+        - 
+          - Name: !If
+              - ProdCond
+              - !Sub "${Domain}"
+              - !Sub "${Env}.{Domain}"
+            Type: A
+            ResourceRecords:
+              - 192.168.1.222
+            TTL: 900
+        - 
+          - Name: !If
+              - ProdCond
+              - !Sub "${Domain}"
+              - !Sub "${Env}.${Domain}"
             Type: A
             AliasTarget:
-              DNSName: !Sub www.${Domain}.
+              DNSName: !If
+                - ProdCond
+                - !Sub "www.${Domain}"
+                - !Sub "www.${Env}.${Domain}"
               HostedZoneId: !Ref ZoneId
 
   CfOai:
@@ -170,9 +206,14 @@ Resources:
       - S3BucketPolicy
     Properties:
       DistributionConfig:
-        Aliases: 
-          - www.onegovee2.com
-          - onegovee2.com
+        Aliases: !If
+          - ProdCond
+          - 
+            - !Sub "www.${Domain}"
+            - !Sub "${Domain}"
+          - 
+            - !Sub "www.${Env}.${Domain}"
+            - !Sub "${Env}.${Domain}"
         ViewerCertificate:
           AcmCertificateArn: !Ref AcmCert
           MinimumProtocolVersion: TLSv1.2_2021
