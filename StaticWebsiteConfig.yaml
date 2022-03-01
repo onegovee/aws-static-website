@@ -89,7 +89,7 @@ Resources:
             exports.handler = (event, context, callback) => {
               let request = event.Records[0].cf.request;
               let host = request.headers.host[0].value;
-              let url = 'https://${TargetDNS}.' + request.uri;
+              let url = 'https://${TargetDNS}' + request.uri;
 
               if (host == "${RedirectDNS}") {
                 var response = {
@@ -111,7 +111,7 @@ Resources:
           - TargetDNS: !If [ProdCond, !Sub "www.${Domain}", !Sub "www.${Env}.${Domain}"]
             RedirectDNS: !If [ProdCond, !Ref Domain, !Sub "${Env}.${Domain}"]
 
-  LambdaVersionRedirectv9:
+  LambdaVersionRedirectv10:
     Type: AWS::Lambda::Version
     Properties:
       FunctionName: !Ref LambdaFunctionRedirect
@@ -162,6 +162,14 @@ Resources:
             AliasTarget:
               DNSName: !GetAtt CfDist.DomainName
               HostedZoneId: Z2FDTNDATAQYW2
+          - Name: !If
+              - ProdCond
+              - !Sub "www.${Domain}"
+              - !Sub "www.${Env}.${Domain}"
+            Type: AAAA
+            AliasTarget:
+              DNSName: !GetAtt CfDist.DomainName
+              HostedZoneId: Z2FDTNDATAQYW2
 
   r53RecordGroupRedirect:
     Type: AWS::Route53::RecordSetGroup
@@ -186,6 +194,17 @@ Resources:
               - !Sub "${Domain}"
               - !Sub "${Env}.${Domain}"
             Type: A
+            AliasTarget:
+              DNSName: !If
+                - ProdCond
+                - !Sub "www.${Domain}"
+                - !Sub "www.${Env}.${Domain}"
+              HostedZoneId: !Ref ZoneId
+          - Name: !If
+              - ProdCond
+              - !Sub "${Domain}"
+              - !Sub "${Env}.${Domain}"
+            Type: AAAA
             AliasTarget:
               DNSName: !If
                 - ProdCond
@@ -221,6 +240,7 @@ Resources:
         DefaultRootObject: index.html
         Enabled: true
         HttpVersion: http2
+        IPV6Enabled: true
         Origins:
           - Id: !GetAtt S3Bucket.RegionalDomainName
             DomainName: !GetAtt S3Bucket.RegionalDomainName
@@ -243,7 +263,7 @@ Resources:
               LambdaFunctionARN: !Join 
                 - ':'
                 - - !GetAtt [LambdaFunctionRedirect, Arn]
-                  - !GetAtt [LambdaVersionRedirectv9, Version]
+                  - !GetAtt [LambdaVersionRedirectv10, Version]
           TargetOriginId: !GetAtt S3Bucket.RegionalDomainName
           ViewerProtocolPolicy: redirect-to-https
         PriceClass: PriceClass_100
