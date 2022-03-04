@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: public hosted zone and related configs
+
+Parameters:
+  Domain:
+    Type: String
+
+Resources:
+
+  HostedZone: 
+    Type: "AWS::Route53::HostedZone"
+    Properties: 
+      Name: !Ref Domain
+
+  Cmk1:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for KSK for DNSSEC
+      Enabled: true
+      EnableKeyRotation: false
+      KeySpec: ECC_NIST_P256
+      KeyUsage: SIGN_VERIFY
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: Cmk1
+        Statement:
+          - Sid: Grant access to other iam principals
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: Grant access to dnssec service
+            Effect: Allow
+            Principal:
+              Service: dnssec-route53.amazonaws.com
+            Action:
+              - kms:DescribeKey
+              - kms:GetPublicKey
+              - kms:Sign
+            Resource: '*'
+          - Sid: Restrict access to dnssec service
+            Effect: Allow
+            Principal:
+              Service: dnssec-route53.amazonaws.com
+            Action:
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: true
+
+  CmkAlias1:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/Dnssec1
+      TargetKeyId: !Ref Cmk1
+
+  Ksk1:
+    Type: AWS::Route53::KeySigningKey
+    Properties:
+      HostedZoneId: !GetAtt HostedZone.Id
+      KeyManagementServiceArn: !GetAtt Cmk1.Arn
+      Name: Ksk1
+      Status: ACTIVE
+
+  Dnssec1:
+    Type: AWS::Route53::DNSSEC
+    DependsOn: Ksk1
+    Properties:
+      HostedZoneId: !GetAtt HostedZone.Id
