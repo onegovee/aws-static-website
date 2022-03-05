@@ -29,12 +29,6 @@ Conditions:
 
 Resources:
 
-  Dnssec1:
-    Type: AWS::Route53::DNSSEC
-    DependsOn: Ksk1
-    Properties:
-      HostedZoneId: !Ref ZoneId
-
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
