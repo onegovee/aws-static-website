@@ -10,7 +10,7 @@ Parameters:
 
 Resources:
 
-  SesCustomResourceLambdaExecutionRole:
+  CustomLambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -36,11 +36,52 @@ Resources:
             - ses:DeleteIdentity
             Resource: "*"
 
+  CustomBackedLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CustomBackedLambda
+      Description: Lambda function for lambda-backed cfn custom resource
+      Runtime: python3.9
+      Role: !Ref CustomLambdaExecutionRole
+      Handler: index.lambda_handler
+      Timeout: 90
+      Environment:
+        Variables:
+          domain: !Ref Domain
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import logging
+          import random
+          
+          # Init of the logging module
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+          
+          def lambda_handler(event, context):
+              if event.get('RequestType') == 'Create':
+                    number = random.randint(0,10)
+                    message = f"{number} > SUCCESS threshold reached!" if number > 5 else f"{number} > still waiting"
+                    responseData = {}
+                    responseData['message'] = message
+                    logging.info('Sending %s to cloudformation', responseData['message'])
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              elif event.get('RequestType') == 'Delete':
+                    responseData = {}
+                    responseData['message'] = "Goodbye from lambda"
+                    logging.info('Sending %s to cloudformation', responseData['message'])
+                    cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              else:
+                  logging.error('Unknown operation: %s', event.get('RequestType'))
+
+  InvokeCustomLambda:
+    Type: Custom::InvokeCustomLambda
+    Properties:
+      ServiceToken: !GetAtt CustomBackedLambda.Arn
+
 # Create domain identity
 # aws ses verify-domain-identity --domain example.com
 
 # Create dkim records
 # aws ses verify-domain-dkim --domain example.com
-
 
 #Outputs:
