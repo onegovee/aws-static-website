@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: simple email service and related configs
+
+Parameters:
+  Domain:
+    Type: String
+#Conditions:
+#Mappings:
+#Metadata:
+
+Resources:
+
+  SesCustomResourceLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AssumeLambdaExecutionRole
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: SESDomainIdentityPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: AllowSESDomainIdentityActions
+            Effect: Allow
+            Action:
+            - ses:VerifyDomainDkim
+            - ses:VerifyDomainIdentity
+            - ses:DeleteIdentity
+            Resource: "*"
+
+# Create domain identity
+# aws ses verify-domain-identity --domain example.com
+
+# Create dkim records
+# aws ses verify-domain-dkim --domain example.com
+
+
+#Outputs:
