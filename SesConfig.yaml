@@ -39,7 +39,6 @@ Resources:
   CustomBackedLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: CustomBackedLambda
       Description: Lambda function for lambda-backed cfn custom resource
       Runtime: python3.9
       Role: !GetAtt CustomLambdaExecutionRole.Arn
@@ -59,27 +58,27 @@ Resources:
           logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
           
           def lambda_handler(event, context):
+            number = os.environ['number']
             print(event)
-            print(event['ResourceType'])
-            print(event['RequestType'])
-            print(event['ResourceProperties'])
+            name = event['ResourceProperties']['Domain']
+            responseData = {}
 
             if event.get('RequestType') == 'Create':
-              number = os.environ['number']
-              message = "Got variable number: " + number
-              responseData = {}
-              responseData['message'] = message
+              responseData['message'] = "Got name: " + name
+              responseData['other'] = "something else"
               logging.info('Sending %s to cloudformation', responseData['message'])
-              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              
             elif event.get('RequestType') == 'Delete':
-              responseData = {}
               responseData['message'] = "Goodbye from lambda"
               logging.info('Sending %s to cloudformation', responseData['message'])
-              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-            else:
-              logging.error('Unknown operation: %s', event.get('RequestType'))
 
-  InvokeCustomLambda:
+            else:
+              responseData['message'] = "Nothing to do!"
+              logging.error('Unknown operation: %s', event.get('RequestType'))
+            
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+  InvokeCustomLambda1:
     Type: Custom::InvokeCustomLambda
     Properties:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
@@ -94,4 +93,4 @@ Resources:
 Outputs:
   CustomLambdaOutput: 
     Description: Message from custom lambda
-    Value: !GetAtt InvokeCustomLambda.message
+    Value: !GetAtt InvokeCustomLambda1.message
