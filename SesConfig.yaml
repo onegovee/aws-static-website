@@ -4,6 +4,7 @@ Description: simple email service and related configs
 Parameters:
   Domain:
     Type: String
+
 #Conditions:
 #Mappings:
 #Metadata:
@@ -54,31 +55,40 @@ Resources:
           import logging
           import os
           
-          # Init of the logging module
-          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-          
           def lambda_handler(event, context):
             number = os.environ['number']
+            log = logging.getLogger()
+            log.setLevel(logging.INFO)
             print(event)
             name = event['ResourceProperties']['Domain']
             responseData = {}
 
-            if event.get('RequestType') == 'Create':
-              responseData['message'] = "Got name: " + name
-              responseData['other'] = "something else"
-              logging.info('Sending %s to cloudformation', responseData['message'])
+            try:
+              if event.get('RequestType') == 'Create':
+                responseData['message'] = "Sending back what lambda got in the request - name: " + name
+                responseData['number'] = "something else" + number
+                log.info('created something')
+                
+              elif event.get('RequestType') == 'Delete':
+                responseData['message'] = "Lambda saw the delete request"
+                log.info('deleted whatever')
+
+              else:
+                responseData['message'] = "Nothing to do!"
+                #log.error('Unknown operation: %s', event.get('RequestType'))
+                log.info('Custom resource didnt do anything')
               
-            elif event.get('RequestType') == 'Delete':
-              responseData['message'] = "Goodbye from lambda"
-              logging.info('Sending %s to cloudformation', responseData['message'])
-
-            else:
-              responseData['message'] = "Nothing to do!"
-              logging.error('Unknown operation: %s', event.get('RequestType'))
+              # Set the status 'reason' in the response
+              # this works but doesn't show in the cloudformation console
+              ## reason = "is this the reason?"
+              ## cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, '', '', reason)
             
-            cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+            # Rollback gracefully on any unexpected errors
+            except Exception:
+              log.exception('Signaling failure to CloudFormation.')
+              cfnresponse.send(event, context, cfnresponse.FAILED, {})
 
-  InvokeCustomLambda1:
+  InvokeCustomLambda:
     Type: Custom::InvokeCustomLambda
     Properties:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
@@ -93,4 +103,4 @@ Resources:
 Outputs:
   CustomLambdaOutput: 
     Description: Message from custom lambda
-    Value: !GetAtt InvokeCustomLambda1.message
+    Value: !GetAtt InvokeCustomLambda.message
