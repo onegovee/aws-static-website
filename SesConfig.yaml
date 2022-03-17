@@ -2,7 +2,9 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: simple email service and related configs
 
 Parameters:
-  Domain:
+  ZoneName:
+    Type: String
+  ZoneId:
     Type: String
 
 #Conditions:
@@ -36,6 +38,11 @@ Resources:
             - ses:VerifyDomainIdentity
             - ses:DeleteIdentity
             Resource: "*"
+          - Sid: AlowRoute53Actions
+            Effect: Allow
+            Action:
+            - route53:ChangeResourceRecordSets
+            Resource: !Sub "arn:aws:route53:::hostedzone/${ZoneId}"
 
   CustomBackedLambda:
     Type: AWS::Lambda::Function
@@ -45,9 +52,6 @@ Resources:
       Role: !GetAtt CustomLambdaExecutionRole.Arn
       Handler: index.lambda_handler
       Timeout: 90
-      Environment:
-        Variables:
-          number: 10
       Code:
         ZipFile: |
           import boto3
@@ -56,43 +60,57 @@ Resources:
           import os
           
           def lambda_handler(event, context):
-            number = os.environ['number']
+
             log = logging.getLogger()
             log.setLevel(logging.INFO)
             print(event)
-            name = event['ResourceProperties']['Domain']
             responseData = {}
 
             try:
-              if event.get('RequestType') == 'Create':
-                responseData['message'] = "Sending back what lambda got in the request - name: " + name
-                responseData['number'] = "something else" + number
-                log.info('created something')
-                
-              elif event.get('RequestType') == 'Delete':
-                responseData['message'] = "Lambda saw the delete request"
-                log.info('deleted whatever')
+
+              request = event['RequestType']
+              properties = event['ResourceProperties']
+              name = properties['ZoneName']
+              id = properties['ZoneId']
+
+              # CREATE and UPDATE events are effectively the same because
+              # Changes to custom resource properties will cause cfn to create a new resource and delete the old one
+              if request == 'Create' or 'Update':
+                responseData['message'] = "Lambda saw the CREATE/UPDATE request"
+                print(properties)
+                #print("Lambda got 'ZoneName' in the request: " + name)
+                #print("Lambda got 'ZoneId' in the request: " + id)
+                log.info('lambda did something with CREATE/UPDATE')
+
+              # 'ResourceProperties' in DELETE events are the same as 'OldResourceProperties' in UPDATE events
+              elif request == 'Delete':
+                responseData['message'] = "Lambda saw the DELETE request"
+                print(properties)
+                log.info('lambda did something with DELETE')
 
               else:
                 responseData['message'] = "Nothing to do!"
-                #log.error('Unknown operation: %s', event.get('RequestType'))
-                log.info('Custom resource didnt do anything')
-              
-              # Set the status 'reason' in the response
-              # this works but doesn't show in the cloudformation console
-              ## reason = "is this the reason?"
-              ## cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, '', '', reason)
-            
+                log.info('Lambda didnt do anything')
+
             # Rollback gracefully on any unexpected errors
             except Exception:
               log.exception('Signaling failure to CloudFormation.')
               cfnresponse.send(event, context, cfnresponse.FAILED, {})
+            
+            else:
+              # Always send SUCCESS back to cfn if lambda did what it was supposed to do
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              
+              # This works but doesn't show in the cloudformation console
+              ## reason = "enter a custom reason here"
+              ## cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, '', '', reason)
 
   InvokeCustomLambda:
     Type: Custom::InvokeCustomLambda
     Properties:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
-      Domain: !Ref Domain
+      ZoneName: !Ref ZoneName
+      ZoneId: !Ref ZoneId
 
 # Create domain identity
 # aws ses verify-domain-identity --domain example.com
