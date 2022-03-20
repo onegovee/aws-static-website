@@ -34,6 +34,7 @@ Resources:
           - Sid: AllowSESDomainIdentityActions
             Effect: Allow
             Action:
+            - ses:ListIdentities
             - ses:VerifyDomainDkim
             - ses:VerifyDomainIdentity
             - ses:DeleteIdentity
@@ -70,29 +71,50 @@ Resources:
 
               request = event['RequestType']
               properties = event['ResourceProperties']
-              name = properties['ZoneName']
-              id = properties['ZoneId']
+              ZoneName = properties['ZoneName']
+              ZoneId = properties['ZoneId']
+              ses = boto3.client('ses')
 
               # CREATE and UPDATE events are effectively the same because
               # Changes to custom resource properties will cause cfn to create a new resource and delete the old one
-              if request == 'Create' or 'Update':
+              if request in {'Create', 'Update'}:
                 responseData['message'] = "Lambda saw the CREATE/UPDATE request"
                 print(properties)
-                #print("Lambda got 'ZoneName' in the request: " + name)
-                #print("Lambda got 'ZoneId' in the request: " + id)
-                log.info('lambda did something with CREATE/UPDATE')
+                #print("Lambda got 'ZoneName' in the request: " + ZoneName)
+                #print("Lambda got 'ZoneId' in the request: " + ZoneId)
+
+                # Create domain identity verification
+                #verify_domain = ses.verify_domain_identity(Domain=ZoneName)
+                # This is for TXT record but is not required if DKIM is used
+                #verify_token = verify_domain['VerificationToken']
+                #print(verify_token)
+
+                # Creating DKIM tokens also creates the identity
+                dkim = ses.verify_domain_dkim(Domain=ZoneName)
+                tokens = dkim['DkimTokens']
+                print(tokens)
+
+                log.info('Created verification identity for ' + ZoneName)
 
               # 'ResourceProperties' in DELETE events are the same as 'OldResourceProperties' in UPDATE events
               elif request == 'Delete':
-                responseData['message'] = "Lambda saw the DELETE request"
+                print("Lambda saw the DELETE request")
                 print(properties)
-                log.info('lambda did something with DELETE')
+
+                identities = ses.list_identities(IdentityType='Domain')['Identities']
+                for identity in identities:
+                  if identity == ZoneName.lower():
+                    delete_identity = ses.delete_identity(Identity=ZoneName)
+                    #print(delete_identity)
+                    log.info('Deleted old verification identity for ' + identity)
+                  else:
+                    log.info('Skipping deletion of verification identity for ' + identity)
 
               else:
                 responseData['message'] = "Nothing to do!"
-                log.info('Lambda didnt do anything')
+                log.info('Lambda did not do anything')
 
-            # Rollback gracefully on any unexpected errors
+            # Send FAILED back to cfn for any unexpected error
             except Exception:
               log.exception('Signaling failure to CloudFormation.')
               cfnresponse.send(event, context, cfnresponse.FAILED, {})
