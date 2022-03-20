@@ -6,6 +6,8 @@ Parameters:
     Type: String
   ZoneId:
     Type: String
+  RecipientEmail:
+    Type: String
 
 #Conditions:
 #Mappings:
@@ -39,11 +41,6 @@ Resources:
             - ses:VerifyDomainIdentity
             - ses:DeleteIdentity
             Resource: "*"
-          - Sid: AlowRoute53Actions
-            Effect: Allow
-            Action:
-            - route53:ChangeResourceRecordSets
-            Resource: !Sub "arn:aws:route53:::hostedzone/${ZoneId}"
 
   CustomBackedLambda:
     Type: AWS::Lambda::Function
@@ -58,61 +55,58 @@ Resources:
           import boto3
           import cfnresponse
           import logging
-          import os
           
           def lambda_handler(event, context):
-
             log = logging.getLogger()
-            log.setLevel(logging.INFO)
+            #log.setLevel(logging.INFO)
             print(event)
-            responseData = {}
 
             try:
-
-              request = event['RequestType']
-              properties = event['ResourceProperties']
-              ZoneName = properties['ZoneName']
-              ZoneId = properties['ZoneId']
               ses = boto3.client('ses')
+              RequestType = event['RequestType']
+              ZoneName = event['ResourceProperties']['ZoneName']
+              responseData = {}
+              records = []
 
-              # CREATE and UPDATE events are effectively the same because
               # Changes to custom resource properties will cause cfn to create a new resource and delete the old one
-              if request in {'Create', 'Update'}:
-                responseData['message'] = "Lambda saw the CREATE/UPDATE request"
-                print(properties)
-                #print("Lambda got 'ZoneName' in the request: " + ZoneName)
-                #print("Lambda got 'ZoneId' in the request: " + ZoneId)
+              # This means CREATE and UPDATE events are effectively the same
+              if RequestType in {'Create', 'Update'}:
+                print("Got CREATE/UPDATE request for " + ZoneName)
 
-                # Create domain identity verification
-                #verify_domain = ses.verify_domain_identity(Domain=ZoneName)
-                # This is for TXT record but is not required if DKIM is used
-                #verify_token = verify_domain['VerificationToken']
-                #print(verify_token)
-
+                # Create DKIM tokens for identity verification
                 # Creating DKIM tokens also creates the identity
+                # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ses.html#SES.Client.verify_domain_dkim
                 dkim = ses.verify_domain_dkim(Domain=ZoneName)
                 tokens = dkim['DkimTokens']
-                print(tokens)
 
-                log.info('Created verification identity for ' + ZoneName)
+                # Create DNS records to complete identity verification
+                for DkimTokens in tokens:
+                  record = {
+                    "Name": "{dkim_token}._domainkey.{zone_name}".format(dkim_token=DkimTokens,zone_name=ZoneName),
+                    "Type": "CNAME",
+                    "TTL": "60",
+                    "ResourceRecords": [
+                      "{dkim_token}.dkim.amazonses.com".format(dkim_token=DkimTokens)
+                    ]
+                  }
+                  records.append(record)
+
+                # Send data back to cfn
+                responseData['records'] = records
+                responseData['message'] = "Created verification identity for " + ZoneName
 
               # 'ResourceProperties' in DELETE events are the same as 'OldResourceProperties' in UPDATE events
-              elif request == 'Delete':
-                print("Lambda saw the DELETE request")
-                print(properties)
-
-                identities = ses.list_identities(IdentityType='Domain')['Identities']
-                for identity in identities:
-                  if identity == ZoneName.lower():
-                    delete_identity = ses.delete_identity(Identity=ZoneName)
-                    #print(delete_identity)
-                    log.info('Deleted old verification identity for ' + identity)
-                  else:
-                    log.info('Skipping deletion of verification identity for ' + identity)
+              elif RequestType == 'Delete':
+                print("Got DELETE request for " + ZoneName)
+                ses.delete_identity(Identity=ZoneName)
+                print("Deleted identity verification for " + ZoneName)
+                # This is here mainly for changes to the identity/ZoneName
+                # If a duplicate identity is submitted for verification
+                # The identity may be deleted but the DNS records will not
+                # And then magically restored even though logging will show it was deleted here
 
               else:
-                responseData['message'] = "Nothing to do!"
-                log.info('Lambda did not do anything')
+                print('Lambda did nothing')
 
             # Send FAILED back to cfn for any unexpected error
             except Exception:
@@ -122,25 +116,76 @@ Resources:
             else:
               # Always send SUCCESS back to cfn if lambda did what it was supposed to do
               cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
-              
-              # This works but doesn't show in the cloudformation console
-              ## reason = "enter a custom reason here"
-              ## cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, '', '', reason)
 
-  InvokeCustomLambda:
+  SesDomainIdentityMail:
     Type: Custom::InvokeCustomLambda
     Properties:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
       ZoneName: !Ref ZoneName
-      ZoneId: !Ref ZoneId
 
-# Create domain identity
-# aws ses verify-domain-identity --domain example.com
+# The responseData returned from the custom resource is not persisted between change sets so
+# Do not modify the RecordSetGroup resource if the corresponding SES identity has been verified
+  SesDkimRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      Comment: DNS records to complete SES domain identity verification
+      HostedZoneId: !Ref ZoneId
+      RecordSets: !GetAtt SesDomainIdentityMail.records
+  
+  SesMxRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Comment: DNS record for SES to manage incoming email
+      HostedZoneId: !Ref ZoneId
+      Name: !Ref ZoneName
+      TTL: 60
+      Type: MX
+      ResourceRecords:
+      - !Sub "10 inbound-smtp.${AWS::Region}.amazonaws.com"
 
-# Create dkim records
-# aws ses verify-domain-dkim --domain example.com
+  SnsTopic:
+    Type: AWS::SNS::Topic
+
+  SesReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: !Sub "default-result-set-${AWS::Region}"
+
+  SesReceiptRuleTest:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      RuleSetName: !Ref SesReceiptRuleSet
+      Rule:
+        Name: test-rule-1
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Require
+        Recipients:
+          - !Ref RecipientEmail
+        Actions:
+          - SNSAction: 
+              Encoding: UTF-8
+              TopicArn: !Ref SnsTopic
+  
+  # ReceiptFilterBlock:
+  #   Type: AWS::SES::ReceiptFilter
+  #   Properties:
+  #     Filter:
+  #       Name: test-filter-block-1
+  #       IpFilter:
+  #         Policy: Allow
+  #         Cidr: 0.0.0.0/0
+
+  # ReceiptFilterAllow:
+  #   Type: AWS::SES::ReceiptFilter
+  #   Properties:
+  #     Filter:
+  #       Name: test-filter-allow-1
+  #       IpFilter:
+  #         Policy: Allow
+  #         Cidr: 169.254.169.254/32
 
 Outputs:
   CustomLambdaOutput: 
-    Description: Message from custom lambda
-    Value: !GetAtt InvokeCustomLambda.message
+    Description: Message from the SES domain verification custom resource
+    Value: !GetAtt SesDomainIdentityMail.message
