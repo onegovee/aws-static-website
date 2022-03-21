@@ -39,6 +39,7 @@ Resources:
             - ses:ListIdentities
             - ses:VerifyDomainDkim
             - ses:VerifyDomainIdentity
+            - ses:SetActiveReceiptRuleSet
             - ses:DeleteIdentity
             Resource: "*"
 
@@ -60,53 +61,61 @@ Resources:
             log = logging.getLogger()
             #log.setLevel(logging.INFO)
             print(event)
-
+            
             try:
               ses = boto3.client('ses')
+              ResourceType = event['ResourceType']
               RequestType = event['RequestType']
-              ZoneName = event['ResourceProperties']['ZoneName']
               responseData = {}
               records = []
 
-              # Changes to custom resource properties will cause cfn to create a new resource and delete the old one
-              # This means CREATE and UPDATE events are effectively the same
-              if RequestType in {'Create', 'Update'}:
-                print("Got CREATE/UPDATE request for " + ZoneName)
+              if ResourceType == "Custom::InvokeCustomLambda":
+                ZoneName = event['ResourceProperties']['ZoneName']
 
-                # Create DKIM tokens for identity verification
-                # Creating DKIM tokens also creates the identity
-                # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ses.html#SES.Client.verify_domain_dkim
-                dkim = ses.verify_domain_dkim(Domain=ZoneName)
-                tokens = dkim['DkimTokens']
+                # Changes to custom resource properties will cause cfn to create a new resource and delete the old one
+                # This means CREATE and UPDATE events are effectively the same
+                if RequestType in {"Create", "Update"}:
+                  print("Got CREATE/UPDATE request for " + ZoneName)
 
-                # Create DNS records to complete identity verification
-                for DkimTokens in tokens:
-                  record = {
-                    "Name": "{dkim_token}._domainkey.{zone_name}".format(dkim_token=DkimTokens,zone_name=ZoneName),
-                    "Type": "CNAME",
-                    "TTL": "60",
-                    "ResourceRecords": [
-                      "{dkim_token}.dkim.amazonses.com".format(dkim_token=DkimTokens)
-                    ]
-                  }
-                  records.append(record)
+                  # Create DKIM tokens for identity verification
+                  # Creating DKIM tokens also creates the identity
+                  # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ses.html#SES.Client.verify_domain_dkim
+                  dkim = ses.verify_domain_dkim(Domain=ZoneName)
+                  tokens = dkim['DkimTokens']
 
-                # Send data back to cfn
-                responseData['records'] = records
-                responseData['message'] = "Created verification identity for " + ZoneName
+                  # Create DNS records to complete identity verification
+                  for DkimTokens in tokens:
+                    record = {
+                      "Name": "{dkim_token}._domainkey.{zone_name}".format(dkim_token=DkimTokens,zone_name=ZoneName),
+                      "Type": "CNAME",
+                      "TTL": "60",
+                      "ResourceRecords": [
+                        "{dkim_token}.dkim.amazonses.com".format(dkim_token=DkimTokens)
+                      ]
+                    }
+                    records.append(record)
 
-              # 'ResourceProperties' in DELETE events are the same as 'OldResourceProperties' in UPDATE events
-              elif RequestType == 'Delete':
-                print("Got DELETE request for " + ZoneName)
-                ses.delete_identity(Identity=ZoneName)
-                print("Deleted identity verification for " + ZoneName)
-                # This is here mainly for changes to the identity/ZoneName
-                # If a duplicate identity is submitted for verification
-                # The identity may be deleted but the DNS records will not
-                # And then magically restored even though logging will show it was deleted here
+                  # Send data back to cfn
+                  responseData['records'] = records
+                  responseData['message'] = "Created verification identity for " + ZoneName
+
+                # 'ResourceProperties' in DELETE events are the same as 'OldResourceProperties' in UPDATE events
+                elif RequestType == "Delete":
+                  print("Got DELETE request for " + ZoneName)
+                  ses.delete_identity(Identity=ZoneName)
+                  print("Deleted identity verification for " + ZoneName)
+                  # This is here mainly for changes to the identity/ZoneName
+                  # If a duplicate identity is submitted for verification
+                  # The identity may be deleted but the DNS records will not
+                  # And then magically restored even though logging will show it was deleted here
+
+              elif ResourceType == "Custom::SetActiveRuleSet" and RequestType != "Delete":
+                RuleSetName = event['ResourceProperties']['RuleSetName']
+                print("Setting the following SES rule set as active: " + RuleSetName)
+                ses.set_active_receipt_rule_set(RuleSetName=RuleSetName)
 
               else:
-                print('Lambda did nothing')
+                print("Lambda got RequestType: " + RequestType + " but did nothing")
 
             # Send FAILED back to cfn for any unexpected error
             except Exception:
@@ -124,7 +133,7 @@ Resources:
       ZoneName: !Ref ZoneName
 
 # The responseData returned from the custom resource is not persisted between change sets so
-# Do not modify the RecordSetGroup resource if the corresponding SES identity has been verified
+# Do not modify the RecordSetGroup if the corresponding SES identity has been verified and is in use
   SesDkimRecords:
     Type: AWS::Route53::RecordSetGroup
     Properties:
@@ -149,7 +158,14 @@ Resources:
   SesReceiptRuleSet:
     Type: AWS::SES::ReceiptRuleSet
     Properties:
-      RuleSetName: !Sub "default-result-set-${AWS::Region}"
+      RuleSetName: !Sub "default-result-set-${AWS::Region}-6"
+
+# Active rules sets can not be deleted  
+  SesActiveRulesSetDefault:
+    Type: Custom::SetActiveRuleSet
+    Properties:
+      ServiceToken: !GetAtt CustomBackedLambda.Arn
+      RuleSetName: !Ref SesReceiptRuleSet
 
   SesReceiptRuleTest:
     Type: AWS::SES::ReceiptRule
