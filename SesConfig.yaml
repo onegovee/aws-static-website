@@ -183,23 +183,21 @@ Resources:
               Encoding: UTF-8
               TopicArn: !Ref SnsTopic
   
-  # ReceiptFilterBlock:
-  #   Type: AWS::SES::ReceiptFilter
-  #   Properties:
-  #     Filter:
-  #       Name: test-filter-block-1
-  #       IpFilter:
-  #         Policy: Allow
-  #         Cidr: 0.0.0.0/0
+  ReceiptFilterBlock:
+    Type: AWS::SES::ReceiptFilter
+    Properties:
+      Filter:
+        IpFilter:
+          Policy: Block
+          Cidr: 0.0.0.0/0
 
-  # ReceiptFilterAllow:
-  #   Type: AWS::SES::ReceiptFilter
-  #   Properties:
-  #     Filter:
-  #       Name: test-filter-allow-1
-  #       IpFilter:
-  #         Policy: Allow
-  #         Cidr: 169.254.169.254/32
+  ReceiptFilterAllow:
+    Type: AWS::SES::ReceiptFilter
+    Properties:
+      Filter:
+        IpFilter:
+          Policy: Allow
+          Cidr: 209.85.0.0/16
 
 Outputs:
   CustomLambdaOutput: 
