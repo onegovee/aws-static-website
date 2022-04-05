@@ -21,11 +21,14 @@ Parameters:
     AllowedValues:
       - "yes"
       - "no"
+  WebAclArn:
+    Type: String
 
 Conditions:
   UseLegacyCond: !Equals [!Ref UseLegacy, 'true']
   UseCfCond: !Equals [!Ref UseCf, 'yes']
   ProdCond: !Equals [!Ref Env, 'prod']
+  UseWaf: !Not [!Equals [!Ref WebAclArn, ""]]
 
 Resources:
 
@@ -233,6 +236,7 @@ Resources:
           - 
             - !Sub "www.${Env}.${Domain}"
             - !Sub "${Env}.${Domain}"
+        WebACLId: !If [UseWaf, !Ref WebAclArn, !Ref "AWS::NoValue"]
         ViewerCertificate:
           AcmCertificateArn: !Ref AcmCert
           MinimumProtocolVersion: TLSv1.2_2021
