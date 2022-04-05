@@ -28,15 +28,26 @@ Resources:
             CloudWatchMetricsEnabled: true
             MetricName: BlockCfUrl
           Statement:
-            ByteMatchStatement:
-              FieldToMatch:
-                SingleHeader:
-                  Name: host
-              PositionalConstraint: CONTAINS
-              SearchString: cloudfront.net
-              TextTransformations:
-              - Type: NONE
-                Priority: 0
+          #   ByteMatchStatement:
+          #     FieldToMatch:
+          #       SingleHeader:
+          #         Name: host
+          #     PositionalConstraint: CONTAINS
+          #     SearchString: cloudfront.net
+          #     TextTransformations:
+          #     - Type: NONE
+          #       Priority: 0
+            NotStatement:
+              Statement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    SingleHeader:
+                      Name: host
+                  PositionalConstraint: CONTAINS
+                  SearchString: onegovee2.com
+                  TextTransformations:
+                  - Type: NONE
+                    Priority: 0
 
 Outputs:
   CustomWebAcl1Arn:
