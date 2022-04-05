@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: web application firewall and related configs
+
+#Parameters:
+#Conditions:
+#Mappings:
+#Metadata:
+
+Resources:
+
+  Wafv2CustomWebAcl1:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Scope: CLOUDFRONT
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        SampledRequestsEnabled: true
+        MetricName: CustomWebAcl1
+      Rules:
+        - Name: cloudfront-url-block
+          Priority: 0
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BlockCfUrl
+          Statement:
+            ByteMatchStatement:
+              FieldToMatch:
+                SingleHeader:
+                  Name: host
+              PositionalConstraint: CONTAINS
+              SearchString: cloudfront.net
+              TextTransformations:
+              - Type: NONE
+                Priority: 0
+
+Outputs:
+  CustomWebAcl1Arn:
+    Description: ARN of the custom web acl to block cloudfront url
+    Value: !GetAtt Wafv2CustomWebAcl1.Arn
