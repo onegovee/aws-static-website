@@ -1,18 +1,27 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: web application firewall and related configs
 
-#Parameters:
+Parameters:
+  AllowedCidrs:
+    Type: CommaDelimitedList
 #Conditions:
 #Mappings:
 #Metadata:
 
 Resources:
 
+  AllowIpSetList:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Addresses: !Ref AllowedCidrs
+      IPAddressVersion: IPV4
+      Scope: CLOUDFRONT
+
   Wafv2CustomWebAcl1:
     Type: AWS::WAFv2::WebACL
     Properties:
       DefaultAction:
-        Allow: {}
+        Block: {}
       Scope: CLOUDFRONT
       VisibilityConfig:
         CloudWatchMetricsEnabled: true
@@ -22,24 +31,17 @@ Resources:
         - Name: cloudfront-url-block
           Priority: 0
           Action:
-            Block: {}
+            Allow: {}
           VisibilityConfig:
             SampledRequestsEnabled: true
             CloudWatchMetricsEnabled: true
             MetricName: BlockCfUrl
           Statement:
-          #   ByteMatchStatement:
-          #     FieldToMatch:
-          #       SingleHeader:
-          #         Name: host
-          #     PositionalConstraint: CONTAINS
-          #     SearchString: cloudfront.net
-          #     TextTransformations:
-          #     - Type: NONE
-          #       Priority: 0
-            NotStatement:
-              Statement:
-                ByteMatchStatement:
+            AndStatement:
+              Statements:
+              - IPSetReferenceStatement:
+                  Arn: !GetAtt AllowIpSetList.Arn
+              - ByteMatchStatement:
                   FieldToMatch:
                     SingleHeader:
                       Name: host
