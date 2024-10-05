@@ -8,8 +8,15 @@ Parameters:
     Type: String
   RecipientEmail:
     Type: String
+  RecipientFilters:
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
 
-#Conditions:
+Conditions:
+  RecipientFilterCond: !Equals [ !Ref RecipientFilters, true ]
 #Mappings:
 #Metadata:
 
@@ -185,6 +192,7 @@ Resources:
   
   ReceiptFilterBlock:
     Type: AWS::SES::ReceiptFilter
+    Condition: RecipientFilterCond
     Properties:
       Filter:
         IpFilter:
@@ -193,6 +201,7 @@ Resources:
 
   ReceiptFilterAllow:
     Type: AWS::SES::ReceiptFilter
+    Condition: RecipientFilterCond
     Properties:
       Filter:
         IpFilter:
