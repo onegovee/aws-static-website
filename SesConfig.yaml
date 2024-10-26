@@ -164,8 +164,6 @@ Resources:
 
   SesReceiptRuleSet:
     Type: AWS::SES::ReceiptRuleSet
-    Properties:
-      RuleSetName: !Sub "default-result-set-${AWS::Region}-6"
 
 # Active rules sets can not be deleted  
   SesActiveRulesSetDefault:
@@ -174,12 +172,11 @@ Resources:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
       RuleSetName: !Ref SesReceiptRuleSet
 
-  SesReceiptRuleTest:
+  SesReceiptRule:
     Type: AWS::SES::ReceiptRule
     Properties:
       RuleSetName: !Ref SesReceiptRuleSet
       Rule:
-        Name: test-rule-1
         Enabled: true
         ScanEnabled: true
         TlsPolicy: Require
