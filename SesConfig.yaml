@@ -59,7 +59,7 @@ Resources:
       Handler: index.lambda_handler
       Timeout: 90
       Code:
-        ZipFile: |
+        ZipFile: | #py
           import boto3
           import cfnresponse
           import logging
@@ -172,8 +172,50 @@ Resources:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
       RuleSetName: !Ref SesReceiptRuleSet
 
+  SesReceiptLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AssumeLambdaExecutionRole
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  SesReceiptLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda function for processing emails
+      Runtime: python3.12
+      Role: !GetAtt SesReceiptLambdaExecutionRole.Arn
+      Handler: index.lambda_handler
+      Timeout: 90
+      Code:
+        ZipFile: | #py
+          import logging
+          
+          def lambda_handler(event, context):
+            log = logging.getLogger()
+            #log.setLevel(logging.INFO)
+            print(event)
+
+  SesLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SesReceiptLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      # construct the arn to avoid a circular dependency
+      SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:receipt-rule-set/${SesReceiptRuleSet}:receipt-rule/*
+
   SesReceiptRule:
     Type: AWS::SES::ReceiptRule
+    DependsOn: SesLambdaInvokePermission
     Properties:
       RuleSetName: !Ref SesReceiptRuleSet
       Rule:
@@ -183,9 +225,8 @@ Resources:
         Recipients:
           - !Ref RecipientEmail
         Actions:
-          - SNSAction: 
-              Encoding: UTF-8
-              TopicArn: !Ref SnsTopic
+          - LambdaAction:
+              FunctionArn: !GetAtt SesReceiptLambda.Arn
   
   ReceiptFilterBlock:
     Type: AWS::SES::ReceiptFilter
