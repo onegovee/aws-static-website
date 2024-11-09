@@ -1,4 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::LanguageExtensions
 Description: simple email service and related configs
 
 Parameters:
@@ -6,8 +7,8 @@ Parameters:
     Type: String
   ZoneId:
     Type: String
-  RecipientEmail:
-    Type: String
+  RecipientEmails:
+    Type: CommaDelimitedList
   RecipientFilters:
     Type: String
     Default: false
@@ -167,6 +168,7 @@ Resources:
       ServiceToken: !GetAtt CustomBackedLambda.Arn
       RuleSetName: !Ref SesReceiptRuleSet
 
+# Lambda for simple email parsing via SNS
   SimpleEmailParserLambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -181,7 +183,6 @@ Resources:
       ManagedPolicyArns:
       - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-  # Lambda for simple email parsing via SNS
   SimpleEmailParserLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -244,12 +245,95 @@ Resources:
 
   SimpleEmailParserSnsTopic:
     Type: AWS::SNS::Topic
+    DependsOn: SimpleEmailParserSnsLambdaInvokePermission
     Properties:
       Subscription:
         - Protocol: lambda
           Endpoint: !GetAtt SimpleEmailParserLambda.Arn
+  
+# Bucket and lambda for forwarding emails
+  EmailForwarderBucket:
+    Type: AWS::S3::Bucket
+  
+  EmailForwarderBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EmailForwarderBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+            Principal:
+              Service: ses.amazonaws.com
+            Resource:
+              - !Sub arn:aws:s3:::${EmailForwarderBucket}/*
+            Condition:
+              StringEquals:
+                'aws:Referer':
+                  - !Ref AWS::AccountId
+  
+  EmailForwarderLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AssumeLambdaExecutionRole
+          Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-  SesReceiptRule:
+  EmailForwarderLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda function for forwarding emails
+      Runtime: python3.12
+      Role: !GetAtt EmailForwarderLambdaExecutionRole.Arn
+      Handler: index.lambda_handler
+      Timeout: 90
+      Environment:
+        Variables:
+          EMAIL_FORWARDER_BUCKET: !Ref EmailForwarderBucket
+      Code:
+        ZipFile: | #py
+          import os
+          import boto3
+          import email
+          import re
+          from botocore.exceptions import ClientError
+          from email.mime.multipart import MIMEMultipart
+          from email.mime.text import MIMEText
+          from email.mime.application import MIMEApplication
+
+          region = os.environ['AWS_REGION']
+          email_forwarder_bucket = os.environ['EMAIL_FORWARDER_BUCKET']
+
+          def lambda_handler(event, context):
+            print(event)
+
+            # Get the unique ID of the message. This corresponds to the name of the file in S3.
+            message_id = event['Records'][0]['ses']['mail']['messageId']
+            print("Received message ID:", message_id)
+
+          def get_message_from_s3(message_id):
+
+
+  EmailForwarderSesLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt EmailForwarderLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      # construct the arn to avoid a circular dependency
+      SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:receipt-rule-set/${SesReceiptRuleSet}:receipt-rule/*
+
+  ReceiptRuleDefault:
     Type: AWS::SES::ReceiptRule
     Properties:
       RuleSetName: !Ref SesReceiptRuleSet
@@ -257,12 +341,27 @@ Resources:
         Enabled: true
         ScanEnabled: true
         TlsPolicy: Require
-        Recipients:
-          - !Ref RecipientEmail
+        Recipients: !Ref RecipientEmails
         Actions:
           - SNSAction: 
               Encoding: UTF-8
               TopicArn: !Ref SimpleEmailParserSnsTopic
+  
+  ReceiptRule0:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: EmailForwarderBucketPolicy
+    Properties:
+      RuleSetName: !Ref SesReceiptRuleSet
+      After: !Ref ReceiptRuleDefault
+      Rule:
+        Recipients:
+          - !Select [0, !Ref RecipientEmails] 
+        Actions:
+          - S3Action:
+              BucketName: !Ref EmailForwarderBucket
+              ObjectKeyPrefix: !Select [0, !Ref RecipientEmails] 
+          - LambdaAction:
+              FunctionArn: !GetAtt EmailForwarderLambda.Arn
   
   ReceiptFilterBlock:
     Type: AWS::SES::ReceiptFilter
