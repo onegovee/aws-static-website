@@ -15,6 +15,10 @@ Parameters:
     AllowedValues:
       - true
       - false
+  EmailBucketName:
+    Type: String
+  ForwardToAddress:
+    Type: String
 
 Conditions:
   RecipientFilterCond: !Equals [ !Ref RecipientFilters, true ]
@@ -252,13 +256,15 @@ Resources:
           Endpoint: !GetAtt SimpleEmailParserLambda.Arn
   
 # Bucket and lambda for forwarding emails
-  EmailForwarderBucket:
+  EmailBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref EmailBucketName
   
-  EmailForwarderBucketPolicy:
+  EmailBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref EmailForwarderBucket
+      Bucket: !Ref EmailBucket
       PolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -268,7 +274,7 @@ Resources:
             Principal:
               Service: ses.amazonaws.com
             Resource:
-              - !Sub arn:aws:s3:::${EmailForwarderBucket}/*
+              - !Sub arn:aws:s3:::${EmailBucket}/*
             Condition:
               StringEquals:
                 'aws:Referer':
@@ -280,13 +286,30 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-        - Sid: AssumeLambdaExecutionRole
-          Effect: Allow
-          Principal:
-            Service: lambda.amazonaws.com
-          Action: sts:AssumeRole
+          - Sid: AssumeLambdaExecutionRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - s3:ListBucket
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - s3:GetObject
+                Effect: Allow
+                Resource: !Sub arn:aws:s3:::${EmailBucket}/*
+              - Action:
+                  - ses:SendRawEmail
+                Effect: Allow
+                Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
 
   EmailForwarderLambda:
     Type: AWS::Lambda::Function
@@ -298,7 +321,8 @@ Resources:
       Timeout: 90
       Environment:
         Variables:
-          EMAIL_FORWARDER_BUCKET: !Ref EmailForwarderBucket
+          BUCKET_NAME: !Ref EmailBucket
+          FORWARD_TO_ADDRESS: !Ref ForwardToAddress
       Code:
         ZipFile: | #py
           import os
@@ -311,17 +335,118 @@ Resources:
           from email.mime.application import MIMEApplication
 
           region = os.environ['AWS_REGION']
-          email_forwarder_bucket = os.environ['EMAIL_FORWARDER_BUCKET']
+          bucket_name = os.environ['BUCKET_NAME']
+          forward_to_address = os.environ['FORWARD_TO_ADDRESS']
 
+          s3 = boto3.client("s3")
+          ses = boto3.client('ses', region)
+
+          def get_message_from_s3(recipient, message_id):
+            object_key = (recipient + "/" + message_id)
+            object_uri = "s3://%s/%s" % (bucket_name, object_key)
+
+            # Get the email object from the S3 bucket.
+            get_object_response = s3.get_object(
+              Bucket=bucket_name,
+              Key=object_key
+            )
+            file = get_object_response['Body'].read()
+            file_dict = {
+              "file": file,
+              "path": object_uri
+            }
+
+            return file_dict
+          
+          def create_message(sender, forward_to_address, file_dict):
+            # Parse the email body.
+            mailobject = email.message_from_string(file_dict['file'].decode('utf-8'))
+
+            # Create a new subject line.
+            subject_original = mailobject['Subject']
+            subject = "FW: " + subject_original
+
+            # The body text of the email.
+            separator = ";"
+            body_text = ("The attached message was received from " 
+                        + separator.join(mailobject.get_all('From'))
+                        + ". This message is archived at " + file_dict['path']
+                        )
+
+            # The file name to use for the attached message. Uses regex to remove all
+            # non-alphanumeric characters, and appends a file extension.
+            filename = re.sub('[^0-9a-zA-Z]+', '_', subject_original) + ".eml"
+
+            # Create a MIME container.
+            msg = MIMEMultipart()
+            # Create a MIME text part.
+            text_part = MIMEText(body_text, _subtype="html")
+            # Attach the text part to the MIME message.
+            msg.attach(text_part)
+
+            # Add subject, from and to lines.
+            msg['Subject'] = subject
+            msg['From'] = sender
+            msg['To'] = forward_to_address
+
+            # Create a new MIME object.
+            att = MIMEApplication(file_dict["file"], filename)
+            att.add_header("Content-Disposition", 'attachment', filename=filename)
+
+            # Attach the file object to the message.
+            msg.attach(att)
+
+            message = {
+              "Source": sender,
+              "Destinations": forward_to_address,
+              "Data": msg.as_string()
+            }
+
+            return message
+          
+          def send_email(message):
+            source = message['Source']
+            destinations = message['Destinations']
+            data = message['Data']
+            
+            try:
+              send_raw_email_response = ses.send_raw_email(
+                Source=source,
+                Destinations=[
+                  destinations
+                ],
+                RawMessage={
+                  'Data':data
+                }
+              )
+            except ClientError as error:
+              result = error.response['Error']['Message']
+            
+            else:
+              result = "Email sent! Message ID: " + send_raw_email_response['MessageId']
+
+            return result
+          
           def lambda_handler(event, context):
             print(event)
+            # Get the original sender
+            sender_orig = event['Records'][0]['ses']['mail']['source']
+            print("Original email sender: ", sender_orig)
+            # Get the original recipient
+            recipient_orig = event['Records'][0]['ses']['mail']['destination'][0]
+            # Use the original recipient as the sender of the forwarded email
+            # this is assumed to be under the verified domain
+            sender_fwd = recipient_orig
+            print("Original recipient / forward sender: ", sender_fwd)
 
             # Get the unique ID of the message. This corresponds to the name of the file in S3.
             message_id = event['Records'][0]['ses']['mail']['messageId']
-            print("Received message ID:", message_id)
 
-          def get_message_from_s3(message_id):
-
+            # Call functions to get message from S3, create a new message and send to forward-to address
+            file_dict = get_message_from_s3(recipient_orig, message_id)
+            message = create_message(sender_fwd, forward_to_address, file_dict)
+            result = send_email(message)
+            print(result)
 
   EmailForwarderSesLambdaInvokePermission:
     Type: AWS::Lambda::Permission
@@ -349,16 +474,19 @@ Resources:
   
   ReceiptRule0:
     Type: AWS::SES::ReceiptRule
-    DependsOn: EmailForwarderBucketPolicy
+    DependsOn: EmailBucketPolicy
     Properties:
       RuleSetName: !Ref SesReceiptRuleSet
       After: !Ref ReceiptRuleDefault
       Rule:
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Require
         Recipients:
           - !Select [0, !Ref RecipientEmails] 
         Actions:
           - S3Action:
-              BucketName: !Ref EmailForwarderBucket
+              BucketName: !Ref EmailBucket
               ObjectKeyPrefix: !Select [0, !Ref RecipientEmails] 
           - LambdaAction:
               FunctionArn: !GetAtt EmailForwarderLambda.Arn
