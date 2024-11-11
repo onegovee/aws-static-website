@@ -309,7 +309,7 @@ Resources:
               - Action:
                   - ses:SendRawEmail
                 Effect: Allow
-                Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                Resource: '*'
 
   EmailForwarderLambda:
     Type: AWS::Lambda::Function
@@ -323,130 +323,62 @@ Resources:
         Variables:
           BUCKET_NAME: !Ref EmailBucket
           FORWARD_TO_ADDRESS: !Ref ForwardToAddress
+          DOMAIN: !Ref ZoneName
       Code:
         ZipFile: | #py
           import os
           import boto3
-          import email
-          import re
           from botocore.exceptions import ClientError
-          from email.mime.multipart import MIMEMultipart
-          from email.mime.text import MIMEText
-          from email.mime.application import MIMEApplication
+          import email
+          from email import policy
+          from email.parser import BytesParser
 
-          region = os.environ['AWS_REGION']
+          s3 = boto3.client('s3')
+          ses = boto3.client('ses')
+
           bucket_name = os.environ['BUCKET_NAME']
           forward_to_address = os.environ['FORWARD_TO_ADDRESS']
+          domain = os.environ['DOMAIN']
 
-          s3 = boto3.client("s3")
-          ses = boto3.client('ses', region)
-
-          def get_message_from_s3(recipient, message_id):
-            object_key = (recipient + "/" + message_id)
-            object_uri = "s3://%s/%s" % (bucket_name, object_key)
-
-            # Get the email object from the S3 bucket.
-            get_object_response = s3.get_object(
-              Bucket=bucket_name,
-              Key=object_key
-            )
-            file = get_object_response['Body'].read()
-            file_dict = {
-              "file": file,
-              "path": object_uri
-            }
-
-            return file_dict
-          
-          def create_message(sender, forward_to_address, file_dict):
-            # Parse the email body.
-            mailobject = email.message_from_string(file_dict['file'].decode('utf-8'))
-
-            # Create a new subject line.
-            subject_original = mailobject['Subject']
-            subject = "FW: " + subject_original
-
-            # The body text of the email.
-            separator = ";"
-            body_text = ("The attached message was received from " 
-                        + separator.join(mailobject.get_all('From'))
-                        + ". This message is archived at " + file_dict['path']
-                        )
-
-            # The file name to use for the attached message. Uses regex to remove all
-            # non-alphanumeric characters, and appends a file extension.
-            filename = re.sub('[^0-9a-zA-Z]+', '_', subject_original) + ".eml"
-
-            # Create a MIME container.
-            msg = MIMEMultipart()
-            # Create a MIME text part.
-            text_part = MIMEText(body_text, _subtype="html")
-            # Attach the text part to the MIME message.
-            msg.attach(text_part)
-
-            # Add subject, from and to lines.
-            msg['Subject'] = subject
-            msg['From'] = sender
-            msg['To'] = forward_to_address
-
-            # Create a new MIME object.
-            att = MIMEApplication(file_dict["file"], filename)
-            att.add_header("Content-Disposition", 'attachment', filename=filename)
-
-            # Attach the file object to the message.
-            msg.attach(att)
-
-            message = {
-              "Source": sender,
-              "Destinations": forward_to_address,
-              "Data": msg.as_string()
-            }
-
-            return message
-          
-          def send_email(message):
-            source = message['Source']
-            destinations = message['Destinations']
-            data = message['Data']
-            
-            try:
-              send_raw_email_response = ses.send_raw_email(
-                Source=source,
-                Destinations=[
-                  destinations
-                ],
-                RawMessage={
-                  'Data':data
-                }
-              )
-            except ClientError as error:
-              result = error.response['Error']['Message']
-            
-            else:
-              result = "Email sent! Message ID: " + send_raw_email_response['MessageId']
-
-            return result
-          
           def lambda_handler(event, context):
             print(event)
-            # Get the original sender
-            sender_orig = event['Records'][0]['ses']['mail']['source']
-            print("Original email sender: ", sender_orig)
-            # Get the original recipient
-            recipient_orig = event['Records'][0]['ses']['mail']['destination'][0]
-            # Use the original recipient as the sender of the forwarded email
-            # this is assumed to be under the verified domain
-            sender_fwd = recipient_orig
-            print("Original recipient / forward sender: ", sender_fwd)
-
-            # Get the unique ID of the message. This corresponds to the name of the file in S3.
+            # Extract the message ID and receipient from the SES event
             message_id = event['Records'][0]['ses']['mail']['messageId']
+            original_recipient = event['Records'][0]['ses']['mail']['destination'][0]
 
-            # Call functions to get message from S3, create a new message and send to forward-to address
-            file_dict = get_message_from_s3(recipient_orig, message_id)
-            message = create_message(sender_fwd, forward_to_address, file_dict)
-            result = send_email(message)
-            print(result)
+            # Retrieve the raw email object from S3 using the prefix + message ID
+            object_key = (original_recipient + "/" + message_id)
+            get_object_response = s3.get_object(Bucket=bucket_name, Key=object_key)
+            raw_email = get_object_response['Body'].read()
+
+            # Parse the email to extract the original sender and subject
+            mail = BytesParser(policy=policy.default).parsebytes(raw_email)
+            original_sender = mail['From']
+            original_subject = mail['Subject']
+            
+            # Create a noreply address under the verified domain
+            noreply_address = 'noreply@' + domain
+
+            # Replace original sender and return-path with the noreply address
+            mail.replace_header('From', noreply_address)
+            mail.replace_header('Return-Path', noreply_address)
+
+            # Add/replace header for replies to original sender
+            if mail.get('Reply-To'):
+              mail.replace_header('Reply-To', original_sender)
+            else:
+              mail.add_header('Reply-To', original_sender)
+
+            # Forward the email using SES, keeping its original content
+            try:
+              send_raw_email_response = ses.send_raw_email(
+                Source=original_recipient,  # Your verified SES sender email
+                Destinations=[forward_to_address],  # Forwarding recipient(s)
+                RawMessage={'Data': mail.as_bytes()}
+              )
+              print(send_raw_email_response)
+            except ClientError as error:
+              print(error.response)
 
   EmailForwarderSesLambdaInvokePermission:
     Type: AWS::Lambda::Permission
