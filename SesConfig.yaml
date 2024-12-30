@@ -1,5 +1,4 @@
 AWSTemplateFormatVersion: 2010-09-09
-Transform: AWS::LanguageExtensions
 Description: simple email service and related configs
 
 Parameters:
@@ -332,6 +331,7 @@ Resources:
           import email
           from email import policy
           from email.parser import BytesParser
+          import re
 
           s3 = boto3.client('s3')
           ses = boto3.client('ses')
@@ -356,18 +356,44 @@ Resources:
             original_sender = mail['From']
             original_subject = mail['Subject']
             
+            # get tag from sender address
+            if re.search(r'<[^>]*>', original_sender):
+              # Remove '<*>'
+              sender_tag = re.sub(r'<[^>]*>', '', original_sender).strip()
+            else:
+              # Return empty string if no meta
+              sender_tag = ''
+
             # Create a noreply address under the verified domain
-            noreply_address = 'noreply@' + domain
+            if sender_tag:
+              noreply_address = f"{sender_tag} <noreply@{domain}>"
+            else:
+              noreply_address = f"noreply@{domain}"
 
             # Replace original sender and return-path with the noreply address
             mail.replace_header('From', noreply_address)
-            mail.replace_header('Return-Path', noreply_address)
+            mail.replace_header('Return-Path', f"noreply@{domain}")
 
             # Add/replace header for replies to original sender
             if mail.get('Reply-To'):
               mail.replace_header('Reply-To', original_sender)
             else:
               mail.add_header('Reply-To', original_sender)
+            
+            # To prevent "Duplicate header 'DKIM-Signature'" error
+            dkim_header = "DKIM-Signature"
+            updated_headers = []
+            for header, value in mail.items():
+              if header.lower() == dkim_header.lower() and "amazonses.com" not in value:
+                updated_headers.append((header, value))
+              else:
+                updated_headers.append((header, value))
+            
+            for header in mail.keys():
+              del mail[header]
+            
+            for header, value in updated_headers:
+              mail[header] = value
 
             # Forward the email using SES, keeping its original content
             try:
