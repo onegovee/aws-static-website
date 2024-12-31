@@ -381,19 +381,9 @@ Resources:
               mail.add_header('Reply-To', original_sender)
             
             # To prevent "Duplicate header 'DKIM-Signature'" error
-            dkim_header = "DKIM-Signature"
-            updated_headers = []
-            for header, value in mail.items():
-              if header.lower() == dkim_header.lower() and "amazonses.com" not in value:
-                updated_headers.append((header, value))
-              else:
-                updated_headers.append((header, value))
-            
-            for header in mail.keys():
-              del mail[header]
-            
-            for header, value in updated_headers:
-              mail[header] = value
+            for header in list(mail.keys()):
+              if header == "DKIM-Signature" and "amazonses.com" in mail[header]:
+                del mail[header]
 
             # Forward the email using SES, keeping its original content
             try:
