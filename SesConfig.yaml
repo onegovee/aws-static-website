@@ -356,17 +356,18 @@ Resources:
             original_sender = mail['From']
             original_subject = mail['Subject']
             
-            # get tag from sender address
+            # get 'friendly name' from sender address
+            # this is a hack but it's to myself and I consent so..
             if re.search(r'<[^>]*>', original_sender):
               # Remove '<*>'
-              sender_tag = re.sub(r'<[^>]*>', '', original_sender).strip()
+              friendly_name = re.sub(r'<[^>]*>', '', original_sender).strip()
             else:
-              # Return empty string if no meta
-              sender_tag = ''
+              # Return empty string if there's no 'friendly name'
+              friendly_name = ''
 
             # Create a noreply address under the verified domain
-            if sender_tag:
-              noreply_address = f"{sender_tag} <noreply@{domain}>"
+            if friendly_name:
+              noreply_address = f"{friendly_name} <noreply@{domain}>"
             else:
               noreply_address = f"noreply@{domain}"
 
