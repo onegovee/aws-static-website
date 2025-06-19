@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  DomainName:
+    Type: String
+  InstanceBundleId:
+    Type: String
+    AllowedValues:
+      - nano_3_0
+      - micro_3_0
+      - small_3_0
+      - medium_3_0
+      - large_3_0
+      - xlarge_3_0
+      - 2xlarge_3_0
+  BucketBundleId:
+    Type: String
+    AllowedValues:
+      - Small_Bucket_1_0
+      - Medium_Bucket_1_0
+      - Large_Bucket_1_0
+
+Resources:
+  Instance:
+    Type: AWS::Lightsail::Instance
+    Properties:
+      BlueprintId: wordpress
+      BundleId: !Ref InstanceBundleId
+      InstanceName: !Sub ${AWS::StackName}-instance
+      AddOns:
+        # The latest seven daily automatic snapshots are stored before the oldest one is replaced with the newest one.
+        # https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-configuring-automatic-snapshots.html#automatic-snapshot-retention
+        - AddOnType: AutoSnapshot
+          Status: Enabled
+          # Default snapshot schedule is daily at 00:00 UTC
+          # AutoSnapshotAddOnRequest:
+          #   SnapshotTimeOfDay: HH:MM
+      UserData: |
+        #!/bin/bash
+        yum update -y
+  
+  Bucket:
+    Type: AWS::Lightsail::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-content
+      BundleId: !Ref BucketBundleId
+      AccessRules:
+        GetObject: public
+        AllowPublicOverrides: false
+      ReadOnlyAccessAccounts:
+        - !Ref AWS::AccountId
+      ResourcesReceivingAccess:
+        - !Ref Instance
+
+  LoadBalancer:
+    Type: AWS::Lightsail::LoadBalancer
+    Properties:
+      LoadBalancerName: !Sub ${AWS::StackName}-lb
+      InstancePort: 80
+  
+  LoadBalancerCertificate:
+    Type: AWS::Lightsail::LoadBalancerTlsCertificate
+    Properties:
+      LoadBalancerName: !Sub ${AWS::StackName}-lb
+      CertificateName: !Sub ${AWS::StackName}-certificate
+      CertificateDomainName: !Ref DomainName
+      HttpsRedirectionEnabled: True
+      IsAttached: True
+      CertificateAlternativeNames:
+        - !Sub www.${DomainName}
+
+Outputs:
+  LoadBalancerArn:
+    Description: DNS name of the Lightsail Load Balancer
+    Value: !GetAtt LoadBalancer.LoadBalancerArn
