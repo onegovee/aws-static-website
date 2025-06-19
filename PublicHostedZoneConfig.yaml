@@ -2,17 +2,19 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: public hosted zone and related configs
 
 Parameters:
-  Domain:
+  DomainName:
+    Type: String
+  HostedZoneId:
     Type: String
 
 Resources:
 
-  HostedZone: 
-    Type: "AWS::Route53::HostedZone"
-    Properties: 
-      Name: !Ref Domain
+  # HostedZone: 
+  #   Type: "AWS::Route53::HostedZone"
+  #   Properties: 
+  #     Name: !Ref Domain
 
-  Cmk1:
+  Cmk:
     Type: AWS::KMS::Key
     Properties:
       Description: CMK for KSK for DNSSEC
@@ -50,22 +52,22 @@ Resources:
               Bool:
                 kms:GrantIsForAWSResource: true
 
-  CmkAlias1:
+  CmkAlias:
     Type: AWS::KMS::Alias
     Properties:
-      AliasName: alias/Dnssec1
-      TargetKeyId: !Ref Cmk1
+      AliasName: !Sub alias/${DomainName}_cmk
+      TargetKeyId: !Ref Cmk
 
-  Ksk1:
+  Ksk:
     Type: AWS::Route53::KeySigningKey
     Properties:
-      HostedZoneId: !GetAtt HostedZone.Id
-      KeyManagementServiceArn: !GetAtt Cmk1.Arn
-      Name: Ksk1
+      HostedZoneId: !Ref HostedZoneId
+      KeyManagementServiceArn: !GetAtt Cmk.Arn
+      Name: !Sub ${DomainName}_ksk
       Status: ACTIVE
 
-  Dnssec1:
+  Dnssec:
     Type: AWS::Route53::DNSSEC
-    DependsOn: Ksk1
+    DependsOn: Ksk
     Properties:
-      HostedZoneId: !GetAtt HostedZone.Id
+      HostedZoneId: !Ref HostedZoneId
