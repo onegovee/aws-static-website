@@ -1,33 +1,15 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: static website with cloudfront s3 lambda route53
+Description: Static website with cloudfront, s3 origin, and lambda edge for redirects
 
 Parameters:
   Domain:
     Type: String
   ZoneId:
     Type: String
-  Env:
-    Type: String
-    AllowedValues:
-      - "dev"
-      - "prod"
-  UseLegacy:
-    Type: String
-    AllowedValues:
-      - "true"
-      - "false"
-  UseCf:
-    Type: String
-    AllowedValues:
-      - "yes"
-      - "no"
   WebAclArn:
     Type: String
 
 Conditions:
-  UseLegacyCond: !Equals [!Ref UseLegacy, 'true']
-  UseCfCond: !Equals [!Ref UseCf, 'yes']
-  ProdCond: !Equals [!Ref Env, 'prod']
   UseWaf: !Not [!Equals [!Ref WebAclArn, ""]]
 
 Resources:
@@ -53,7 +35,7 @@ Resources:
       Description: Add http headers
       Handler: 'index.handler'
       Role: !GetAtt LambdaRole.Arn
-      Runtime: nodejs12.x
+      Runtime: nodejs20.x
       Timeout: 25
       Code:
         ZipFile: |
@@ -82,7 +64,7 @@ Resources:
       Description: Host based redirect
       Handler: 'index.handler'
       Role: !GetAtt LambdaRole.Arn
-      Runtime: nodejs12.x
+      Runtime: nodejs20.x
       Timeout: 5
       Code:
         ZipFile: !Sub 
@@ -111,10 +93,10 @@ Resources:
                 callback(null, request);
               }
             };
-          - TargetDNS: !If [ProdCond, !Sub "www.${Domain}", !Sub "www.${Env}.${Domain}"]
-            RedirectDNS: !If [ProdCond, !Ref Domain, !Sub "${Env}.${Domain}"]
+          - TargetDNS: !Sub "www.${Domain}"
+            RedirectDNS: !Ref Domain
 
-  LambdaVersionRedirectv10:
+  LambdaVersionRedirectv1:
     Type: AWS::Lambda::Version
     Properties:
       FunctionName: !Ref LambdaFunctionRedirect
@@ -122,120 +104,61 @@ Resources:
   AcmCert:
     Type: AWS::CertificateManager::Certificate
     Properties:
-      DomainName: !If
-        - ProdCond
-        - !Ref Domain
-        - !Sub ${Env}.${Domain}
+      DomainName: !Ref Domain
       DomainValidationOptions:
-        - DomainName: !If
-          - ProdCond
-          - !Ref Domain
-          - !Sub ${Env}.${Domain}
+        - DomainName: !Ref Domain
           HostedZoneId: !Ref ZoneId
       ValidationMethod: DNS
-      SubjectAlternativeNames: !If
-        - ProdCond
-        - 
-          - !Sub www.${Domain}
-        - 
-          - !Sub www.${Env}.${Domain}
+      SubjectAlternativeNames: 
+        - !Sub www.${Domain}
 
   r53RecordGroup:
     Type: AWS::Route53::RecordSetGroup
     Properties:
       HostedZoneId: !Ref ZoneId
       RecordSets:
-        !If 
-        - UseLegacyCond
-        -
-          - Name: !If
-              - ProdCond
-              - !Sub "www.${Domain}"
-              - !Sub "www.${Env}.${Domain}"
-            Type: A
-            ResourceRecords:
-              - 192.168.1.222
-            TTL: 900
-        -
-          - Name: !If
-              - ProdCond
-              - !Sub "www.${Domain}"
-              - !Sub "www.${Env}.${Domain}"
-            Type: A
-            AliasTarget:
-              DNSName: !GetAtt CfDist.DomainName
-              HostedZoneId: Z2FDTNDATAQYW2
-          - Name: !If
-              - ProdCond
-              - !Sub "www.${Domain}"
-              - !Sub "www.${Env}.${Domain}"
-            Type: AAAA
-            AliasTarget:
-              DNSName: !GetAtt CfDist.DomainName
-              HostedZoneId: Z2FDTNDATAQYW2
+        - Name: !Sub "www.${Domain}"
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt CfDist.DomainName
+            HostedZoneId: !Ref ZoneId
+        - Name: !Sub "www.${Domain}"
+          Type: AAAA
+          AliasTarget:
+            DNSName: !GetAtt CfDist.DomainName
+            HostedZoneId: !Ref ZoneId
 
-  r53RecordGroupRedirect:
-    Type: AWS::Route53::RecordSetGroup
-    DependsOn: r53RecordGroup
-    Properties:
-      HostedZoneId: !Ref ZoneId
-      RecordSets:
-        !If 
-        - UseLegacyCond
-        - 
-          - Name: !If
-              - ProdCond
-              - !Sub "${Domain}"
-              - !Sub "${Env}.{Domain}"
-            Type: A
-            ResourceRecords:
-              - 192.168.1.222
-            TTL: 900
-        - 
-          - Name: !If
-              - ProdCond
-              - !Sub "${Domain}"
-              - !Sub "${Env}.${Domain}"
-            Type: A
-            AliasTarget:
-              DNSName: !If
-                - ProdCond
-                - !Sub "www.${Domain}"
-                - !Sub "www.${Env}.${Domain}"
-              HostedZoneId: !Ref ZoneId
-          - Name: !If
-              - ProdCond
-              - !Sub "${Domain}"
-              - !Sub "${Env}.${Domain}"
-            Type: AAAA
-            AliasTarget:
-              DNSName: !If
-                - ProdCond
-                - !Sub "www.${Domain}"
-                - !Sub "www.${Env}.${Domain}"
-              HostedZoneId: !Ref ZoneId
+  # r53RecordGroupRedirect:
+  #   Type: AWS::Route53::RecordSetGroup
+  #   DependsOn: r53RecordGroup
+  #   Properties:
+  #     HostedZoneId: !Ref ZoneId
+  #     RecordSets:
+  #       - Name: !Sub "${Domain}"
+  #         Type: A
+  #         AliasTarget:
+  #           DNSName: !Sub "${Domain}"
+  #           HostedZoneId: !Ref ZoneId
+  #       - Name: !Sub "${Domain}"
+  #         Type: AAAA
+  #         AliasTarget:
+  #           DNSName: !Sub "${Domain}"
+  #           HostedZoneId: !Ref ZoneId
 
   CfOai:
     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
     Properties:
       CloudFrontOriginAccessIdentityConfig:
-        Comment: 'for onegovee2 cf dist'
+        Comment: !Ref Domain
 
   CfDist:
     Type: AWS::CloudFront::Distribution
-    Condition: UseCfCond
     DependsOn:
       - S3BucketPolicy
     Properties:
       DistributionConfig:
-        Aliases: !If
-          - ProdCond
-          - 
-            - !Sub "www.${Domain}"
-            - !Sub "${Domain}"
-          - 
-            - !Sub "www.${Env}.${Domain}"
-            - !Sub "${Env}.${Domain}"
+        Aliases:
+          - !Sub "www.${Domain}"
         WebACLId: !If [UseWaf, !Ref WebAclArn, !Ref "AWS::NoValue"]
         ViewerCertificate:
           AcmCertificateArn: !Ref AcmCert
@@ -267,13 +190,15 @@ Resources:
               LambdaFunctionARN: !Join 
                 - ':'
                 - - !GetAtt [LambdaFunctionRedirect, Arn]
-                  - !GetAtt [LambdaVersionRedirectv10, Version]
+                  - !GetAtt [LambdaVersionRedirectv1, Version]
           TargetOriginId: !GetAtt S3Bucket.RegionalDomainName
           ViewerProtocolPolicy: redirect-to-https
         PriceClass: PriceClass_100
 
   S3Bucket:
     Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref Domain
 
   S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
