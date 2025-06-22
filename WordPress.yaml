@@ -1,7 +1,10 @@
 AWSTemplateFormatVersion: 2010-09-09
+Description: WordPress deployment using Lightsail
 
 Parameters:
-  DomainName:
+  Domain:
+    Type: String
+  ZoneId: 
     Type: String
   InstanceBundleId:
     Type: String
@@ -13,16 +16,93 @@ Parameters:
       - large_3_0
       - xlarge_3_0
       - 2xlarge_3_0
-  BucketBundleId:
-    Type: String
-    AllowedValues:
-      - Small_Bucket_1_0
-      - Medium_Bucket_1_0
-      - Large_Bucket_1_0
 
 Resources:
-  Instance:
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-media
+      # https://deliciousbrains.com/wp-offload-media/doc/block-all-public-access-to-bucket/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      # https://deliciousbrains.com/wp-offload-media/doc/amazon-s3-bucket-object-ownership/
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  BootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-bootstrap-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MediaAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lightsail:GetInstanceState
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lightsail:AttachStaticIp
+                Resource:
+                  - !Sub arn:aws:lightsail:${AWS::Region}:${AWS::AccountId}:Instance/*
+                  - !Sub arn:aws:lightsail:${AWS::Region}:${AWS::AccountId}:StaticIp/*
+  
+  MediaUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub ${AWS::StackName}-media-user
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-assume-role-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !GetAtt BootstrapRole.Arn
+        # https://deliciousbrains.com/wp-offload-media/doc/custom-iam-policy-for-amazon-s3/
+        - PolicyName: !Sub ${AWS::StackName}-s3-access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketOwnershipControls
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub arn:aws:s3:::${MediaBucket}
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl # Needed to make objects public
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub arn:aws:s3:::${MediaBucket}/*
+
+  MediaUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref MediaUser
+
+  WPInstance:
     Type: AWS::Lightsail::Instance
+    # Wait for DNS record so that domain verification succeeds
+    DependsOn: Ipv4RecordSetGroup
     Properties:
       BlueprintId: wordpress
       BundleId: !Ref InstanceBundleId
@@ -35,41 +115,88 @@ Resources:
           # Default snapshot schedule is daily at 00:00 UTC
           # AutoSnapshotAddOnRequest:
           #   SnapshotTimeOfDay: HH:MM
-      UserData: |
+      UserData: !Sub |
         #!/bin/bash
-        yum update -y
-  
-  Bucket:
-    Type: AWS::Lightsail::Bucket
-    Properties:
-      BucketName: !Sub ${AWS::StackName}-content
-      BundleId: !Ref BucketBundleId
-      AccessRules:
-        GetObject: public
-        AllowPublicOverrides: false
-      ReadOnlyAccessAccounts:
-        - !Ref AWS::AccountId
-      ResourcesReceivingAccess:
-        - !Ref Instance
+        apt-get update -y
+        apt-get install jq -y
 
-  LoadBalancer:
-    Type: AWS::Lightsail::LoadBalancer
+        sudo -i -u bitnami bash << EOF
+
+        # Set up AWS credentials profile
+        aws configure set region ${AWS::Region} --profile media-user
+        aws configure set aws_access_key_id ${MediaUserAccessKey} --profile media-user
+        aws configure set aws_secret_access_key ${MediaUserAccessKey.SecretAccessKey} --profile media-user
+
+        aws configure set role_arn ${BootstrapRole.Arn} --profile bootstrap-role
+        aws configure set source_profile media-user --profile bootstrap-role
+
+        export AWS_CONFIG_FILE="/home/bitnami/.aws/config"
+        export AWS_SHARED_CREDENTIALS_FILE="/home/bitnami/.aws/credentials"
+        aws --profile media-role sts get-caller-identity
+
+        # Instance must be in a 'running' state to attach a static IP
+        INSTANCE_STATE="$(aws --profile bootstrap-role lightsail get-instance-state --instance-name ${AWS::StackName}-instance | jq -r '.state.name')"
+        while [[ "$INSTANCE_STATE" == 'pending' ]]
+        do
+          echo $INSTANCE_STATE
+          sleep 5
+          INSTANCE_STATE="$(aws --profile bootstrap-role lightsail get-instance-state --instance-name ${AWS::StackName}-instance | jq -r '.state.name')"
+        done
+
+        # Attaching the static IP in cfn creates a circular dependency so do it here
+        aws --profile bootstrap-role lightsail attach-static-ip --static-ip-name ${AWS::StackName}-static-ip --instance-name ${AWS::StackName}-instance
+
+        EOF
+
+        # Configure wordpress s3 settings
+        # supported constants https://deliciousbrains.com/wp-offload-media/doc/settings-constants/
+        sed -i.bak "/^\/\* That's all, stop editing! Happy publishing. \*\//i \
+        define('AS3CF_SETTINGS', serialize(array(\
+         'provider' => 'aws',\
+         'access-key-id' => '${MediaUserAccessKey}',\
+         'secret-access-key' => '${MediaUserAccessKey.SecretAccessKey}', \
+        )));" /bitnami/wordpress/wp-config.php
+
+        /opt/bitnami/ctlscript.sh restart
+
+  StaticIp:
+    Type: AWS::Lightsail::StaticIp
     Properties:
-      LoadBalancerName: !Sub ${AWS::StackName}-lb
-      InstancePort: 80
-  
-  LoadBalancerCertificate:
-    Type: AWS::Lightsail::LoadBalancerTlsCertificate
+      StaticIpName: !Sub ${AWS::StackName}-static-ip
+
+  Ipv4RecordSetGroup:
+    Type: AWS::Route53::RecordSetGroup
     Properties:
-      LoadBalancerName: !Sub ${AWS::StackName}-lb
-      CertificateName: !Sub ${AWS::StackName}-certificate
-      CertificateDomainName: !Ref DomainName
-      HttpsRedirectionEnabled: True
-      IsAttached: True
-      CertificateAlternativeNames:
-        - !Sub www.${DomainName}
+      HostedZoneId: !Ref ZoneId
+      RecordSets:
+        - Name: !Sub ${Domain}
+          ResourceRecords: 
+          - !GetAtt StaticIp.IpAddress
+          TTL: 60
+          Type: A
+        - Name: !Sub www.${Domain}
+          ResourceRecords: 
+          - !GetAtt StaticIp.IpAddress
+          TTL: 60
+          Type: A
+
+  Ipv6RecordSetGroup:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref ZoneId
+      RecordSets:    
+        - Name: !Sub ${Domain}
+          ResourceRecords: 
+            !GetAtt WPInstance.Ipv6Addresses
+          TTL: 60
+          Type: AAAA
+        - Name: !Sub www.${Domain}
+          ResourceRecords: 
+            !GetAtt WPInstance.Ipv6Addresses
+          TTL: 60
+          Type: AAAA
 
 Outputs:
-  LoadBalancerArn:
-    Description: DNS name of the Lightsail Load Balancer
-    Value: !GetAtt LoadBalancer.LoadBalancerArn
+  InstanceStaticIpAddress:
+    Description: The static IP attached to the instance
+    Value: !GetAtt StaticIp.IpAddress
