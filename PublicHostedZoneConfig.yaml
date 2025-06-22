@@ -2,18 +2,12 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: public hosted zone and related configs
 
 Parameters:
-  DomainName:
+  HostName:
     Type: String
   HostedZoneId:
     Type: String
 
 Resources:
-
-  # HostedZone: 
-  #   Type: "AWS::Route53::HostedZone"
-  #   Properties: 
-  #     Name: !Ref Domain
-
   Cmk:
     Type: AWS::KMS::Key
     Properties:
@@ -55,7 +49,7 @@ Resources:
   CmkAlias:
     Type: AWS::KMS::Alias
     Properties:
-      AliasName: !Sub alias/${DomainName}_cmk
+      AliasName: !Sub alias/${HostName}_cmk
       TargetKeyId: !Ref Cmk
 
   Ksk:
@@ -63,7 +57,7 @@ Resources:
     Properties:
       HostedZoneId: !Ref HostedZoneId
       KeyManagementServiceArn: !GetAtt Cmk.Arn
-      Name: !Sub ${DomainName}_ksk
+      Name: !Sub ${HostName}_ksk
       Status: ACTIVE
 
   Dnssec:
